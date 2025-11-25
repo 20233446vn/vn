@@ -87,6 +87,7 @@ app.post(
       CMND,
       HoKhau,
       DiaChi,
+      NgayVaoLam,
     } = req.body;
 
     if (!MANV || !TENNV) {
@@ -98,8 +99,8 @@ app.post(
     const [result] = await db.query(
       `INSERT INTO employees
        (MANV, HONV, TENNV, MaPB, MaCV, DienThoai, Email, Status, AvatarUrl,
-        NgaySinh, NoiSinh, GioiTinh, DanToc, TonGiao, CMND, HoKhau, DiaChi)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        NgaySinh, NoiSinh, GioiTinh, DanToc, TonGiao, CMND, HoKhau, DiaChi, NgayVaoLam)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         MANV,
         HONV || "",
@@ -118,6 +119,7 @@ app.post(
         CMND || "",
         HoKhau || "",
         DiaChi || "",
+        NgayVaoLam || null,
       ]
     );
 
@@ -152,6 +154,7 @@ app.put(
       CMND,
       HoKhau,
       DiaChi,
+      NgayVaoLam,
     } = req.body;
 
     if (!MANV || !TENNV) {
@@ -164,7 +167,7 @@ app.put(
       `UPDATE employees
        SET MANV = ?, HONV = ?, TENNV = ?, MaPB = ?, MaCV = ?, DienThoai = ?,
            Email = ?, Status = ?, AvatarUrl = ?, NgaySinh = ?, NoiSinh = ?,
-           GioiTinh = ?, DanToc = ?, TonGiao = ?, CMND = ?, HoKhau = ?, DiaChi = ?
+           GioiTinh = ?, DanToc = ?, TonGiao = ?, CMND = ?, HoKhau = ?, DiaChi = ?, NgayVaoLam = ?
        WHERE MANV = ?`,
       [
         MANV,
@@ -184,6 +187,7 @@ app.put(
         CMND || "",
         HoKhau || "",
         DiaChi || "",
+        NgayVaoLam || null,
         manv,
       ]
     );
@@ -220,14 +224,22 @@ app.get(
 app.get(
   "/api/payroll",
   asyncHandler(async (req, res) => {
-    const month = req.query.month as string | undefined; // ví dụ: 2025-05-01
+    const monthParam = req.query.month as string | undefined;
+    const yearParam = req.query.year as string | undefined;
+
     let sql =
-      "SELECT p.*, e.MANV, e.TENNV, e.PHONGBAN FROM payroll p JOIN employees e ON p.employee_id = e.id";
+      "SELECT p.*, e.MANV, e.HONV, e.TENNV, e.MaPB " +
+      "FROM payroll p JOIN employees e ON p.employee_id = e.id";
     const params: any[] = [];
 
-    if (month) {
+    if (monthParam && yearParam) {
+      // lọc theo tháng/năm: ?month=5&year=2024
+      sql += " WHERE YEAR(p.month) = ? AND MONTH(p.month) = ?";
+      params.push(Number(yearParam), Number(monthParam));
+    } else if (monthParam) {
+      // nếu month là dạng '2025-05-01' thì lọc đúng ngày
       sql += " WHERE p.month = ?";
-      params.push(month);
+      params.push(monthParam);
     }
 
     const [rows] = await db.query(sql, params);
@@ -242,7 +254,8 @@ app.get(
   asyncHandler(async (req, res) => {
     const date = req.query.date as string | undefined; // 2025-05-21
     let sql =
-      "SELECT a.*, e.MANV, e.TENNV FROM attendance a JOIN employees e ON a.employee_id = e.id";
+      "SELECT a.*, e.MANV, e.TENNV, e.HONV " +
+      "FROM attendance a JOIN employees e ON a.employee_id = e.id";
     const params: any[] = [];
 
     if (date) {
@@ -261,11 +274,17 @@ app.get(
   "/api/insurance-tax",
   asyncHandler(async (req, res) => {
     const month = req.query.month as string | undefined;
+    const year = req.query.year as string | undefined;
+
     let sql =
-      "SELECT it.*, e.MANV, e.TENNV FROM insurance_tax it JOIN employees e ON it.employee_id = e.id";
+      "SELECT it.*, e.MANV, e.HONV, e.TENNV " +
+      "FROM insurance_tax it JOIN employees e ON it.employee_id = e.id";
     const params: any[] = [];
 
-    if (month) {
+    if (month && year) {
+      sql += " WHERE YEAR(it.month) = ? AND MONTH(it.month) = ?";
+      params.push(Number(year), Number(month));
+    } else if (month) {
       sql += " WHERE it.month = ?";
       params.push(month);
     }
@@ -293,26 +312,26 @@ app.get(
     );
     const totalSalary = (salaryRows as any)[0].totalSalary ?? 0;
 
-    // Lương trung bình
+    // Lương trung bình tháng hiện tại
     const [avgRows] = await db.query(
       "SELECT COALESCE(AVG(net_salary),0) AS avgSalary " +
         "FROM payroll WHERE YEAR(month) = YEAR(CURDATE()) AND MONTH(month) = MONTH(CURDATE())"
     );
     const avgSalary = (avgRows as any)[0].avgSalary ?? 0;
 
-    // Nhân sự mới trong năm nay (cần cột HIRE_DATE trong employees)
+    // Nhân sự mới trong năm nay (dùng cột NgayVaoLam)
     const [newEmpRows] = await db.query(
       "SELECT COUNT(*) AS newEmployees " +
-        "FROM employees WHERE YEAR(HIRE_DATE) = YEAR(CURDATE())"
+        "FROM employees WHERE YEAR(NgayVaoLam) = YEAR(CURDATE())"
     );
     const newEmployees = (newEmpRows as any)[0].newEmployees ?? 0;
 
     // Nhân sự theo phòng ban (dùng MaPB)
     const [deptRows] = await db.query(
-      "SELECT PHONGBAN AS department, COUNT(*) AS count FROM employees GROUP BY PHONGBAN"
+      "SELECT MaPB AS department, COUNT(*) AS count FROM employees GROUP BY MaPB"
     );
 
-    // Phân bố mức lương
+    // Phân bố mức lương theo net_salary tháng hiện tại
     const [rangeRows] = await db.query(
       "SELECT " +
         "SUM(CASE WHEN net_salary < 10000000 THEN 1 ELSE 0 END) AS under_10m, " +
@@ -320,13 +339,13 @@ app.get(
         "SUM(CASE WHEN net_salary > 20000000 THEN 1 ELSE 0 END) AS over_20m " +
         "FROM payroll WHERE YEAR(month) = YEAR(CURDATE()) AND MONTH(month) = MONTH(CURDATE())"
     );
-    const ranges = (rangeRows as any)[0];
+    const ranges = (rangeRows as any)[0] || {};
 
     res.json({
-      totalEmployees,
-      totalSalary,
-      avgSalary,
-      newEmployees,
+      totalEmployees: Number(totalEmployees),
+      totalSalary: Number(totalSalary),
+      avgSalary: Number(avgSalary),
+      newEmployees: Number(newEmployees),
       departments: deptRows,
       salaryRanges: {
         under10m: Number(ranges.under_10m || 0),
@@ -336,6 +355,117 @@ app.get(
     });
   })
 );
+
+// ----------------- SYSTEM USERS (cho màn Settings) -----------------
+
+// Lưu ý: Cần có bảng system_users:
+// CREATE TABLE system_users (
+//   MaPQ      VARCHAR(50) PRIMARY KEY,
+//   TenDN     VARCHAR(100) NOT NULL,
+//   HoTen     VARCHAR(200) NOT NULL,
+//   QuyenHan  VARCHAR(100) NOT NULL,
+//   TrangThai VARCHAR(50)  NOT NULL
+// );
+
+app.get(
+  "/api/system-users",
+  asyncHandler(async (_req, res) => {
+    const [rows] = await db.query(
+      "SELECT MaPQ, TenDN, HoTen, QuyenHan, TrangThai FROM system_users ORDER BY TenDN"
+    );
+    res.json(rows);
+  })
+);
+
+app.post(
+  "/api/system-users",
+  asyncHandler(async (req, res) => {
+    const { TenDN, HoTen, QuyenHan, TrangThai } = req.body;
+
+    if (!TenDN || !HoTen) {
+      return res
+        .status(400)
+        .json({ error: "Vui lòng nhập Tên đăng nhập và Họ tên." });
+    }
+
+    const maPQ = `U${Date.now()}`;
+
+    await db.query(
+      `INSERT INTO system_users (MaPQ, TenDN, HoTen, QuyenHan, TrangThai)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        maPQ,
+        TenDN,
+        HoTen,
+        QuyenHan || "Nhân viên",
+        TrangThai || "Hoạt động",
+      ]
+    );
+
+    const [rows] = await db.query(
+      "SELECT MaPQ, TenDN, HoTen, QuyenHan, TrangThai FROM system_users WHERE MaPQ = ?",
+      [maPQ]
+    );
+    res.status(201).json((rows as any)[0]);
+  })
+);
+
+app.put(
+  "/api/system-users/:maPQ",
+  asyncHandler(async (req, res) => {
+    const { maPQ } = req.params;
+    const { TenDN, HoTen, QuyenHan, TrangThai } = req.body;
+
+    if (!TenDN || !HoTen) {
+      return res
+        .status(400)
+        .json({ error: "Vui lòng nhập Tên đăng nhập và Họ tên." });
+    }
+
+    await db.query(
+      `UPDATE system_users
+       SET TenDN = ?, HoTen = ?, QuyenHan = ?, TrangThai = ?
+       WHERE MaPQ = ?`,
+      [TenDN, HoTen, QuyenHan || "Nhân viên", TrangThai || "Hoạt động", maPQ]
+    );
+
+    const [rows] = await db.query(
+      "SELECT MaPQ, TenDN, HoTen, QuyenHan, TrangThai FROM system_users WHERE MaPQ = ?",
+      [maPQ]
+    );
+    res.json((rows as any)[0]);
+  })
+);
+
+app.delete(
+  "/api/system-users/:maPQ",
+  asyncHandler(async (req, res) => {
+    const { maPQ } = req.params;
+    await db.query("DELETE FROM system_users WHERE MaPQ = ?", [maPQ]);
+    res.json({ success: true });
+  })
+);
+
+// ----------------- SYSTEM ROLES (cho tab Roles) -----------------
+
+// Gợi ý bảng:
+// CREATE TABLE system_roles (
+//   MaPQ VARCHAR(50) PRIMARY KEY,
+//   TenPQ VARCHAR(100) NOT NULL,
+//   MoTa  VARCHAR(255)
+// );
+
+app.get(
+  "/api/system-roles",
+  asyncHandler(async (_req, res) => {
+    const [rows] = await db.query(
+      "SELECT MaPQ, TenPQ, MoTa FROM system_roles ORDER BY TenPQ"
+    );
+    res.json(rows);
+  })
+);
+
+// ----------------- START SERVER -----------------
 
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);

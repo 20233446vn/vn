@@ -33,6 +33,11 @@ interface EmployeeDetail {
   DiaChi?: string;
 }
 
+interface Department {
+  MaPB: string;
+  TenPB: string;
+}
+
 type TabKey = "profile" | "contracts" | "education" | "salary";
 
 export default function EmployeeDetail() {
@@ -40,6 +45,7 @@ export default function EmployeeDetail() {
   const navigate = useNavigate();
 
   const [emp, setEmp] = useState<EmployeeDetail | null>(null);
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -58,18 +64,28 @@ export default function EmployeeDetail() {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch(`${API_BASE}/api/employees/${manv}`);
-      if (res.status === 404) {
+
+      const [empRes, deptRes] = await Promise.all([
+        fetch(`${API_BASE}/api/employees/${manv}`),
+        fetch(`${API_BASE}/api/departments`),
+      ]);
+
+      if (empRes.status === 404) {
         setError("Không tìm thấy nhân viên.");
         return;
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setEmp(data);
-      setEditData(data);
+      if (!empRes.ok) throw new Error(`HTTP ${empRes.status}`);
+      if (!deptRes.ok) throw new Error(`HTTP ${deptRes.status}`);
+
+      const empData: EmployeeDetail = await empRes.json();
+      const deptData: Department[] = await deptRes.json();
+
+      setEmp(empData);
+      setEditData(empData);
+      setDepartments(deptData);
     } catch (err) {
       console.error(err);
-      setError("Không tải được thông tin nhân viên.");
+      setError("Không tải được thông tin nhân viên hoặc phòng ban.");
     } finally {
       setLoading(false);
     }
@@ -77,10 +93,17 @@ export default function EmployeeDetail() {
 
   useEffect(() => {
     fetchDetail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manv]);
 
   const fullName = emp ? `${emp.HONV ? emp.HONV + " " : ""}${emp.TENNV}` : "";
   const statusLabel = emp?.Status || "Đang làm việc";
+
+  const deptName = emp
+    ? departments.find((d) => d.MaPB === emp.MaPB)?.TenPB ||
+      emp.MaPB ||
+      "Phòng ban"
+    : "Phòng ban";
 
   const getStatusClass = () => {
     switch (statusLabel) {
@@ -210,7 +233,7 @@ export default function EmployeeDetail() {
                   {emp.MaCV || "Chức vụ"}
                 </span>
                 <span className="text-gray-400">•</span>
-                <span>{emp.MaPB || "Phòng ban"}</span>
+                <span>{deptName}</span>
               </div>
               <div className="flex flex-wrap items-center gap-4 mt-3 text-sm text-gray-600 dark:text-gray-300">
                 {emp.DienThoai && (
@@ -527,8 +550,8 @@ function Row({ label, value }: { label: string; value?: string }) {
 function PlaceholderTab({ title }: { title: string }) {
   return (
     <div className="text-sm text-gray-500">
-      Phần <span className="font-medium">{title}</span> sẽ được kết nối với
-      dữ liệu sau. Hiện tại dùng để minh họa giao diện giống demo.
+      Phần <span className="font-medium">{title}</span> sẽ được kết nối với dữ
+      liệu sau. Hiện tại dùng để minh họa giao diện giống demo.
     </div>
   );
 }
