@@ -3,14 +3,21 @@ import { Users, Search, Plus, X, Save, RotateCcw } from "lucide-react";
 
 const API_BASE = "http://localhost:3001";
 
+/* ------------------ INTERFACES ------------------ */
+
 interface SystemUser {
   id: number;
-  TenDN: string; // Tên đăng nhập
-  MatKhau: string; // Mật khẩu 
-  HoTen: string; // Họ và tên
-  MaPQ: string;  // Mã quyền
-  TenPQ?: string; // Tên quyền (join từ system_roles)
+  TenDN: string;
+  MatKhau: string;
+  HoTen: string; // vẫn giữ cho khớp backend, nhưng không dùng
+  MaPQ: string;
+  TenPQ?: string;
   TrangThai: "Hoạt động" | "Khóa";
+
+  MaNV?: string | null;
+  TenNV?: string | null;
+  DienThoai?: string | null;
+  Email?: string | null;
 }
 
 interface SystemRole {
@@ -22,11 +29,17 @@ interface SystemRole {
 
 interface UserForm {
   TenDN: string;
-  HoTen: string;
   MaPQ: string;
   TrangThai: "Hoạt động" | "Khóa";
-  MatKhau: string; // chỉ dùng trong form (POST/PUT), không hiển thị trong bảng
+  MatKhau: string;
+
+  MaNV: string;
+  TenNV: string;
+  DienThoai: string;
+  Email: string;
 }
+
+/* ------------------ COMPONENT ------------------ */
 
 const Settings: React.FC = () => {
   const [users, setUsers] = useState<SystemUser[]>([]);
@@ -40,22 +53,32 @@ const Settings: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [editingUser, setEditingUser] = useState<SystemUser | null>(null);
 
-  const [form, setForm] = useState<UserForm>({
+  // trạng thái tra cứu nhân viên theo Mã NV
+  const [empLookupLoading, setEmpLookupLoading] = useState(false);
+  const [empLookupError, setEmpLookupError] = useState<string | null>(null);
+
+  const emptyForm: UserForm = {
     TenDN: "",
-    HoTen: "",
     MaPQ: "",
     TrangThai: "Hoạt động",
     MatKhau: "",
-  });
 
-  // ------------------ LOAD DATA ------------------
+    MaNV: "",
+    TenNV: "",
+    DienThoai: "",
+    Email: "",
+  };
+
+  const [form, setForm] = useState<UserForm>(emptyForm);
+
+  /* ------------------ FETCH DATA ------------------ */
 
   const fetchUsers = async () => {
     try {
       setLoading(true);
       setError(null);
       const res = await fetch(`${API_BASE}/api/system-users`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error("Load users failed");
       const data: SystemUser[] = await res.json();
       setUsers(data);
     } catch (err) {
@@ -70,12 +93,11 @@ const Settings: React.FC = () => {
     try {
       setRolesLoading(true);
       const res = await fetch(`${API_BASE}/api/system-roles`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error("Load roles failed");
       const data: SystemRole[] = await res.json();
       setRoles(data);
     } catch (err) {
       console.error(err);
-      // Không cần báo lỗi to quá, form chỉ thiếu danh sách quyền
     } finally {
       setRolesLoading(false);
     }
@@ -86,86 +108,158 @@ const Settings: React.FC = () => {
     fetchRoles();
   }, []);
 
-  // ------------------ FORM HANDLERS ------------------
+  /* ------------------ TRA CỨU NHÂN VIÊN THEO MÃ NV ------------------ */
+  interface SimpleEmployee {
+    MANV?: string | null;
+    HONV?: string | null;
+    TENNV?: string | null;
+    DienThoai?: string | null;
+    Email?: string | null;
+  }  
+  const fetchEmployeeByMaNV = async (ma: string) => {
+    const norm = ma.trim().toUpperCase();
+    if (!norm) return;
+
+    try {
+      setEmpLookupLoading(true);
+      setEmpLookupError(null);
+
+      // 1. Lấy toàn bộ danh sách nhân viên
+      const res = await fetch(`${API_BASE}/api/employees`);
+      if (!res.ok) {
+        throw new Error("Không lấy được danh sách nhân viên");
+      }
+
+      const list: SimpleEmployee[] = await res.json();
+
+      // 2. Tìm nhân viên có MANV trùng (so sánh sau khi trim + toUpperCase)
+      const emp = list.find((e) => {
+        const code = (e.MANV || "").trim().toUpperCase();
+        return code === norm;
+      });
+
+      if (!emp) {
+        setEmpLookupError(`Không tìm thấy nhân viên với mã "${norm}".`);
+        return;
+      }
+
+      const fullName =
+        `${emp.HONV ? emp.HONV + " " : ""}${emp.TENNV ?? ""}`.trim();
+
+      // 3. Đổ dữ liệu vào form
+      setForm((prev) => ({
+        ...prev,
+        MaNV: emp.MANV ?? prev.MaNV,
+        TenNV: fullName || prev.TenNV,
+        DienThoai: emp.DienThoai ?? prev.DienThoai,
+        Email: emp.Email ?? prev.Email,
+      }));
+    } catch (err) {
+      console.error(err);
+      setEmpLookupError("Lỗi khi lấy thông tin nhân viên.");
+    } finally {
+      setEmpLookupLoading(false);
+    }
+  };
+
+  const handleMaNVBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    const value = e.target.value.trim();
+    if (value) {
+      fetchEmployeeByMaNV(value);
+    }
+  };
+
+  const handleLookupClick = () => {
+    if (!form.MaNV.trim()) {
+      setEmpLookupError("Vui lòng nhập Mã NV trước.");
+      return;
+    }
+    fetchEmployeeByMaNV(form.MaNV);
+  };
+
+  /* ------------------ MODAL HANDLERS ------------------ */
 
   const openAddModal = () => {
     setEditingUser(null);
+    setEmpLookupError(null);
     setForm({
-      TenDN: "",
-      HoTen: "",
+      ...emptyForm,
       MaPQ: roles[0]?.MaPQ || "",
-      TrangThai: "Hoạt động",
-      MatKhau: "",
     });
     setShowModal(true);
   };
 
   const openEditModal = (user: SystemUser) => {
     setEditingUser(user);
+    setEmpLookupError(null);
     setForm({
       TenDN: user.TenDN,
-      HoTen: user.HoTen,
       MaPQ: user.MaPQ,
       TrangThai: user.TrangThai,
-      MatKhau: "", // để trống, nếu nhập mới thì sẽ cập nhật lại mật khẩu
+      MatKhau: "",
+
+      MaNV: user.MaNV ?? "",
+      TenNV: user.TenNV ?? "",
+      DienThoai: user.DienThoai ?? "",
+      Email: user.Email ?? "",
     });
     setShowModal(true);
   };
 
   const closeModal = () => {
-    if (saving) return;
-    setShowModal(false);
-    setEditingUser(null);
+    if (!saving) {
+      setShowModal(false);
+      setEditingUser(null);
+    }
   };
+
+  /* ------------------ FORM ------------------ */
 
   const handleChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
   ) => {
     const { name, value } = e.target;
-    setForm((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
+    setForm((prev) => ({ ...prev, [name]: value }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!form.TenDN || !form.HoTen || !form.MaPQ) {
-      alert("Vui lòng nhập đầy đủ Tên đăng nhập, Họ tên và Mã quyền.");
+    if (!form.TenDN || !form.MaPQ) {
+      alert("Vui lòng nhập Tên đăng nhập và chọn Mã quyền.");
       return;
     }
 
     if (!editingUser && !form.MatKhau) {
-      alert("Vui lòng nhập mật khẩu cho tài khoản mới.");
+      alert("Tài khoản mới phải có mật khẩu.");
       return;
     }
 
     try {
       setSaving(true);
-      let res: Response;
 
       const payload: any = {
         TenDN: form.TenDN,
-        HoTen: form.HoTen,
         MaPQ: form.MaPQ,
         TrangThai: form.TrangThai,
+        MaNV: form.MaNV,
+        TenNV: form.TenNV,
+        DienThoai: form.DienThoai,
+        Email: form.Email,
       };
 
-      // Chỉ gửi MatKhau nếu có nhập (tạo mới hoặc đổi mật khẩu)
-      if (form.MatKhau && form.MatKhau.trim() !== "") {
+      if (form.MatKhau.trim() !== "") {
         payload.MatKhau = form.MatKhau;
       }
 
+      let res: Response;
       if (editingUser) {
-        // Cập nhật
         res = await fetch(`${API_BASE}/api/system-users/${editingUser.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
       } else {
-        // Tạo mới
         res = await fetch(`${API_BASE}/api/system-users`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -173,12 +267,7 @@ const Settings: React.FC = () => {
         });
       }
 
-      if (!res.ok) {
-        const msg = await res.text();
-        console.error("Save error:", msg);
-        throw new Error(`HTTP ${res.status}`);
-      }
-
+      if (!res.ok) throw new Error("Save failed");
       const saved: SystemUser = await res.json();
 
       if (editingUser) {
@@ -187,15 +276,16 @@ const Settings: React.FC = () => {
         setUsers((prev) => [...prev, saved]);
       }
 
-      setShowModal(false);
-      setEditingUser(null);
-    } catch (err: any) {
+      closeModal();
+    } catch (err) {
       console.error(err);
       alert("Lưu tài khoản thất bại. Vui lòng thử lại.");
     } finally {
       setSaving(false);
     }
   };
+
+  /* ------------------ DELETE / RESET ------------------ */
 
   const handleDelete = async (user: SystemUser) => {
     if (!window.confirm(`Bạn có chắc muốn xóa tài khoản "${user.TenDN}"?`)) {
@@ -206,8 +296,7 @@ const Settings: React.FC = () => {
       const res = await fetch(`${API_BASE}/api/system-users/${user.id}`, {
         method: "DELETE",
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
+      if (!res.ok) throw new Error("Delete failed");
       setUsers((prev) => prev.filter((u) => u.id !== user.id));
     } catch (err) {
       console.error(err);
@@ -227,12 +316,9 @@ const Settings: React.FC = () => {
     try {
       const res = await fetch(
         `${API_BASE}/api/system-users/${user.id}/reset-password`,
-        {
-          method: "PUT",
-        }
+        { method: "PUT" }
       );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
+      if (!res.ok) throw new Error("Reset failed");
       const data = await res.json();
       alert(data.message || "Đã reset mật khẩu thành công.");
     } catch (err) {
@@ -241,7 +327,7 @@ const Settings: React.FC = () => {
     }
   };
 
-  // ------------------ FILTERED LIST ------------------
+  /* ------------------ FILTER USERS ------------------ */
 
   const filteredUsers = useMemo(() => {
     if (!searchTerm.trim()) return users;
@@ -249,12 +335,13 @@ const Settings: React.FC = () => {
     return users.filter(
       (u) =>
         u.TenDN.toLowerCase().includes(q) ||
-        (u.HoTen && u.HoTen.toLowerCase().includes(q)) ||
-        (u.TenPQ && u.TenPQ.toLowerCase().includes(q))
+        (u.MaNV ?? "").toLowerCase().includes(q) ||
+        (u.Email ?? "").toLowerCase().includes(q) ||
+        (u.TenPQ ?? "").toLowerCase().includes(q)
     );
   }, [users, searchTerm]);
 
-  // ------------------ RENDER ------------------
+  /* ------------------ UI ------------------ */
 
   return (
     <div className="p-6 space-y-6">
@@ -265,7 +352,7 @@ const Settings: React.FC = () => {
           Tài khoản hệ thống
         </h1>
         <p className="text-gray-500 dark:text-gray-400">
-          Quản lý tài khoản đăng nhập, quyền truy cập và trạng thái hoạt động.
+          Quản lý tài khoản đăng nhập, quyền truy cập và thông tin nhân viên phục vụ quên mật khẩu.
         </p>
       </div>
 
@@ -278,7 +365,7 @@ const Settings: React.FC = () => {
             <input
               type="text"
               className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-900 text-sm text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              placeholder="Tìm theo tài khoản, họ tên hoặc quyền..."
+              placeholder="Tìm theo tài khoản, mã NV, email, quyền..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
@@ -321,7 +408,7 @@ const Settings: React.FC = () => {
                       Mật khẩu
                     </th>
                     <th className="px-4 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">
-                      Họ và tên
+                      Mã NV
                     </th>
                     <th className="px-4 py-2 text-left font-semibold text-gray-600 dark:text-gray-300">
                       Quyền
@@ -347,7 +434,7 @@ const Settings: React.FC = () => {
                         {user.MatKhau}
                       </td>
                       <td className="px-4 py-2 whitespace-nowrap text-gray-800 dark:text-gray-200">
-                        {user.HoTen}
+                        {user.MaNV || "-"}
                       </td>
                       <td className="px-4 py-2 whitespace-nowrap text-gray-800 dark:text-gray-200">
                         <div className="flex flex-col">
@@ -418,6 +505,7 @@ const Settings: React.FC = () => {
             </div>
 
             <form onSubmit={handleSubmit} className="px-4 py-4 space-y-4">
+              {/* Tên đăng nhập */}
               <div className="space-y-1">
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                   Tên đăng nhập
@@ -432,20 +520,103 @@ const Settings: React.FC = () => {
                 />
               </div>
 
+              {/* Mật khẩu */}
               <div className="space-y-1">
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Họ và tên
+                  Mật khẩu{" "}
+                  {editingUser && (
+                    <span className="text-xs text-gray-400">
+                      (để trống nếu không đổi)
+                    </span>
+                  )}
                 </label>
                 <input
-                  type="text"
-                  name="HoTen"
-                  value={form.HoTen}
+                  type="password"
+                  name="MatKhau"
+                  value={form.MatKhau}
                   onChange={handleChange}
                   className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="Nhập họ tên hiển thị"
+                  placeholder={
+                    editingUser
+                      ? "Nhập mật khẩu mới (nếu muốn đổi)"
+                      : "Nhập mật khẩu ban đầu"
+                  }
                 />
               </div>
 
+              {/* Mã NV + nút lấy thông tin */}
+              <div className="space-y-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Mã nhân viên
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    name="MaNV"
+                    value={form.MaNV}
+                    onChange={handleChange}
+                    onBlur={handleMaNVBlur}
+                    className="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="VD: NV001"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleLookupClick}
+                    className="px-3 py-2 rounded-lg border border-blue-500 text-blue-600 text-xs font-medium hover:bg-blue-50 disabled:opacity-60"
+                    disabled={empLookupLoading}
+                  >
+                    {empLookupLoading ? "Đang lấy..." : "Lấy từ NV"}
+                  </button>
+                </div>
+                {empLookupError && (
+                  <p className="text-xs text-red-500 mt-1">{empLookupError}</p>
+                )}
+              </div>
+
+              {/* Thông tin nhân viên (tự fill, chỉ xem) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Tên nhân viên
+                  </label>
+                  <input
+                    type="text"
+                    name="TenNV"
+                    value={form.TenNV}
+                    readOnly
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-sm text-gray-900 dark:text-gray-100"
+                    placeholder="Tự động sau khi nhập Mã NV"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Số điện thoại
+                  </label>
+                  <input
+                    type="text"
+                    name="DienThoai"
+                    value={form.DienThoai}
+                    readOnly
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-sm text-gray-900 dark:text-gray-100"
+                    placeholder="Tự động sau khi nhập Mã NV"
+                  />
+                </div>
+                <div className="space-y-1 md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Email
+                  </label>
+                  <input
+                    type="email"
+                    name="Email"
+                    value={form.Email}
+                    readOnly
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-sm text-gray-900 dark:text-gray-100"
+                    placeholder="Tự động sau khi nhập Mã NV"
+                  />
+                </div>
+              </div>
+
+              {/* Quyền */}
               <div className="space-y-1">
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                   Quyền (Mã quyền - MaPQ)
@@ -470,6 +641,7 @@ const Settings: React.FC = () => {
                 )}
               </div>
 
+              {/* Trạng thái */}
               <div className="space-y-1">
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                   Trạng thái
@@ -485,29 +657,7 @@ const Settings: React.FC = () => {
                 </select>
               </div>
 
-              <div className="space-y-1">
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Mật khẩu{" "}
-                  {editingUser && (
-                    <span className="text-xs text-gray-400">
-                      (để trống nếu không đổi)
-                    </span>
-                  )}
-                </label>
-                <input
-                  type="password"
-                  name="MatKhau"
-                  value={form.MatKhau}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder={
-                    editingUser
-                      ? "Nhập mật khẩu mới (nếu muốn đổi)"
-                      : "Nhập mật khẩu ban đầu"
-                  }
-                />
-              </div>
-
+              {/* Buttons */}
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"

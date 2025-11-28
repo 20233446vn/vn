@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Plus,
@@ -10,6 +10,7 @@ import {
   Phone,
   Mail,
 } from "lucide-react";
+import { POSITIONS } from "../services/mockData";
 
 const API_BASE = "http://localhost:3001";
 
@@ -23,16 +24,33 @@ interface Employee {
   Status?: string | null;
   DienThoai?: string | null;
   Email?: string | null;
-
-  // Thông tin thêm
+  DiaChi?: string | null;
   NgaySinh?: string | null;
+  NoiSinh?: string | null;
   GioiTinh?: string | null;
+  DanToc?: string | null;
+  TonGiao?: string | null;
+  QuocTich?: string | null;
   CMND?: string | null;
   HoKhau?: string | null;
-  DiaChi?: string | null;
+  HIRE_DATE?: string | null;
   NgayVaoLam?: string | null;
+
+  // Trình độ & Đào tạo
+  TrinhDoVanHoa?: string | null;
+  TrinhDoChuyenMon?: string | null;
+
+  // Lương & Thưởng
+  LuongCoBan?: number | null;
+  PhuCapChucVu?: number | null;
+
+  // Hợp đồng & Công tác
+  LoaiHopDong?: string | null;
+
+  // Khác
   SoBHYT?: string | null;
   SoTheATM?: string | null;
+  MaSoThue?: string | null;
 }
 
 interface Department {
@@ -40,11 +58,118 @@ interface Department {
   TenPB: string;
 }
 
+// các option cho dropdown
+const CONTRACT_TYPES = [
+  "Không xác định thời hạn",
+  "Xác định thời hạn 12 tháng",
+  "Xác định thời hạn 24 tháng",
+  "Thử việc",
+];
+
+const EDUCATION_LEVELS = [
+  "THPT",
+  "Trung cấp",
+  "Cao đẳng",
+  "Đại học",
+  "Sau đại học",
+];
+
+const PROFESSIONAL_LEVELS = [
+  "Chưa phân loại",
+  "Nhân viên",
+  "Chuyên viên",
+  "Trưởng nhóm",
+  "Trưởng phòng",
+];
+
+// Dân tộc & Tôn giáo
+const ETHNIC_GROUPS = [
+  "Kinh",
+  "Tày",
+  "Thái",
+  "Mường",
+  "Khmer",
+  "Hoa",
+  "Nùng",
+  "H’Mông",
+  "Dao",
+  "Gia Rai",
+  "Ê Đê",
+  "Ba Na",
+  "Sán Chay",
+  "Chăm",
+  "Khác",
+];
+
+const RELIGIONS = [
+  "Không",
+  "Phật giáo",
+  "Công giáo",
+  "Tin Lành",
+  "Cao Đài",
+  "Phật giáo Hòa Hảo",
+  "Khác",
+];
+
+const NATIONALITIES = [
+  "Việt Nam",
+  "Hàn Quốc",
+  "Nhật Bản",
+  "Trung Quốc",
+  "Mỹ",
+  "Anh",
+  "Pháp",
+  "Đức",
+  "Úc",
+  "Singapore",
+  "Thái Lan",
+  "Khác",
+];
+
+// các field dạng số
+const NUMBER_FIELDS = new Set(["LuongCoBan", "PhuCapChucVu"]);
+
 function resolveAvatarUrl(url?: string | null): string {
   if (!url) return "";
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
   if (url.startsWith("/")) return `${API_BASE}${url}`;
-  return url;
+  return `${API_BASE}/${url}`;
+}
+
+// Lấy số thứ tự tiếp theo từ danh sách nhân viên hiện có
+function getNextSequence(employees: Employee[]): number {
+  let max = 0;
+
+  employees.forEach((e) => {
+    if (!e.MANV) return;
+
+    const matches = e.MANV.match(/(\d+)/g);
+    if (!matches || matches.length === 0) return;
+
+    const lastGroup = matches[matches.length - 1];
+    const num = parseInt(lastGroup, 10);
+
+    if (!isNaN(num) && num > max) {
+      max = num;
+    }
+  });
+
+  return max + 1;
+}
+
+// Lấy phần số trong MANV để sort
+function getManvNumber(manv: string): number {
+  const matches = manv.match(/(\d+)/g);
+  if (!matches || matches.length === 0) return 0;
+  const last = matches[matches.length - 1];
+  const num = parseInt(last, 10);
+  return isNaN(num) ? 0 : num;
+}
+
+function getPositionName(maCV?: string | null): string {
+  if (!maCV) return "Chức vụ chưa cập nhật";
+  const found = POSITIONS.find((p) => p.MaCV === maCV);
+  return found?.TenCV || `Mã CV: ${maCV}`;
 }
 
 export default function EmployeeList() {
@@ -58,6 +183,9 @@ export default function EmployeeList() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const formRef = useRef<HTMLFormElement | null>(null);
+
 
   // Modal thêm / sửa
   const [showModal, setShowModal] = useState(false);
@@ -73,6 +201,7 @@ export default function EmployeeList() {
     Status: "Đang làm việc",
     AvatarUrl: "",
     NgaySinh: "",
+    NoiSinh: "",
     GioiTinh: "",
     CMND: "",
     HoKhau: "",
@@ -80,16 +209,22 @@ export default function EmployeeList() {
     NgayVaoLam: "",
     SoBHYT: "",
     SoTheATM: "",
+    MaSoThue: "",
+    LoaiHopDong: "",
+    TrinhDoVanHoa: "",
+    TrinhDoChuyenMon: "",
+    LuongCoBan: undefined,
+    PhuCapChucVu: undefined,
+    DanToc: "",
+    TonGiao: "",
+    QuocTich: "",
   });
-
   // File ảnh & preview
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string>("");
-
   // Modal xóa
   const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null);
   const [saving, setSaving] = useState(false);
-
   // ----- LOAD DATA -----
   const fetchEmployees = async () => {
     try {
@@ -124,9 +259,22 @@ export default function EmployeeList() {
     fetchDepartments();
   }, []);
 
-  // ----- FILTER / SEARCH -----
+  // revoke blob URL when preview changes / component unmount
+  useEffect(() => {
+    return () => {
+      if (avatarPreview && avatarPreview.startsWith("blob:")) {
+        try {
+          URL.revokeObjectURL(avatarPreview);
+        } catch (e) {
+          /* ignore */
+        }
+      }
+    };
+  }, [avatarPreview]);
+
+  // ----- FILTER / SEARCH + SORT -----
   const filteredEmployees = useMemo(() => {
-    return employees
+    let list = employees
       .filter((e) => {
         if (deptFilter === "all") return true;
         return e.MaPB === deptFilter;
@@ -134,11 +282,17 @@ export default function EmployeeList() {
       .filter((e) => {
         if (!search.trim()) return true;
         const q = search.toLowerCase();
+        const fullName = `${e.HONV} ${e.TENNV}`.toLowerCase();
         return (
           e.MANV.toLowerCase().includes(q) ||
-          `${e.HONV} ${e.TENNV}`.toLowerCase().includes(q)
+          fullName.includes(q) ||
+          (e.DienThoai || "").toLowerCase().includes(q) ||
+          (e.Email || "").toLowerCase().includes(q)
         );
       });
+
+    list = list.sort((a, b) => getManvNumber(a.MANV) - getManvNumber(b.MANV));
+    return list;
   }, [employees, deptFilter, search]);
 
   const getDeptName = (maPB?: string | null) => {
@@ -150,9 +304,14 @@ export default function EmployeeList() {
 
   // ----- HANDLERS -----
   const openAddModal = () => {
+    const nextSeqNumber = getNextSequence(employees);
+    const seq = String(nextSeqNumber).padStart(4, "0");
+    const newMANV = `NV${seq}`;
+    const newSoBHYT = `YT${seq}`;
+
     setEditing(null);
     setFormData({
-      MANV: "",
+      MANV: newMANV,
       HONV: "",
       TENNV: "",
       MaPB: "",
@@ -162,18 +321,33 @@ export default function EmployeeList() {
       Status: "Đang làm việc",
       AvatarUrl: "",
       NgaySinh: "",
+      NoiSinh: "",
       GioiTinh: "",
       CMND: "",
       HoKhau: "",
       DiaChi: "",
       NgayVaoLam: "",
-      SoBHYT: "",
+      SoBHYT: newSoBHYT,
       SoTheATM: "",
+      MaSoThue: "",
+      LoaiHopDong: "",
+      TrinhDoVanHoa: "",
+      TrinhDoChuyenMon: "",
+      LuongCoBan: undefined,
+      PhuCapChucVu: undefined,
+      DanToc: "",
+      TonGiao: "",
+      QuocTich: "",
     });
     setAvatarFile(null);
+    if (avatarPreview && avatarPreview.startsWith("blob:")) {
+      URL.revokeObjectURL(avatarPreview);
+    }
     setAvatarPreview("");
+    setFormError(null);   // 🔹 reset lỗi
     setShowModal(true);
   };
+
 
   const openEditModal = (emp: Employee) => {
     setEditing(emp);
@@ -181,6 +355,7 @@ export default function EmployeeList() {
       ...emp,
       AvatarUrl: emp.AvatarUrl || "",
       NgaySinh: emp.NgaySinh || "",
+      NoiSinh: emp.NoiSinh || "",
       GioiTinh: emp.GioiTinh || "",
       CMND: emp.CMND || "",
       HoKhau: emp.HoKhau || "",
@@ -188,9 +363,20 @@ export default function EmployeeList() {
       NgayVaoLam: emp.NgayVaoLam || "",
       SoBHYT: emp.SoBHYT || "",
       SoTheATM: emp.SoTheATM || "",
+      MaSoThue: emp.MaSoThue || "",
+      LoaiHopDong: emp.LoaiHopDong || "",
+      TrinhDoVanHoa: emp.TrinhDoVanHoa || "",
+      TrinhDoChuyenMon: emp.TrinhDoChuyenMon || "",
+      LuongCoBan: emp.LuongCoBan ?? undefined,
+      PhuCapChucVu: emp.PhuCapChucVu ?? undefined,
+      DanToc: emp.DanToc || "",
+      TonGiao: emp.TonGiao || "",
+      QuocTich: emp.QuocTich || "",
     });
     setAvatarFile(null);
-    setAvatarPreview(resolveAvatarUrl(emp.AvatarUrl));
+    const resolved = resolveAvatarUrl(emp.AvatarUrl as string | undefined);
+    setAvatarPreview(resolved);
+    setFormError(null);
     setShowModal(true);
   };
 
@@ -198,24 +384,70 @@ export default function EmployeeList() {
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
   ) => {
     const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
+
+    if (NUMBER_FIELDS.has(name)) {
+      setFormData((prev) => ({
+        ...prev,
+        [name]: value === "" ? undefined : Number(value),
+      }));
+    } else {
+      setFormData((prev) => ({ ...prev, [name]: value }));
+    }
   };
 
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) {
       setAvatarFile(null);
-      // không xoá preview cũ nếu bỏ chọn
       return;
+    }
+    if (avatarPreview && avatarPreview.startsWith("blob:")) {
+      try {
+        URL.revokeObjectURL(avatarPreview);
+      } catch (e) {}
     }
     setAvatarFile(file);
     setAvatarPreview(URL.createObjectURL(file));
   };
 
+  const showError = (msg: string) => {
+    setFormError(msg);
+    // Scroll lên đầu vùng form để thấy thông báo lỗi
+    if (formRef.current) {
+      formRef.current.scrollTo({
+        top: 0,
+        behavior: "smooth",
+      });
+    }
+  };
+
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.MANV || !formData.TENNV) {
-      alert("Vui lòng nhập Mã NV và Tên nhân viên.");
+    setFormError(null);
+
+    if (!formData.TENNV) {
+      showError("Vui lòng nhập Tên nhân viên.");
+      return;
+    }
+
+    // --- VALIDATE LOCAL ---
+    const phone = (formData.DienThoai || "").trim();
+    const cmnd = (formData.CMND || "").trim();
+    const email = (formData.Email || "").trim();
+
+    if (phone && !/^\d{10}$/.test(phone)) {
+      showError("Số điện thoại phải gồm đúng 10 chữ số.");
+      return;
+    }
+
+    if (cmnd && !/^\d{12}$/.test(cmnd)) {
+      showError("Số CMND/CCCD phải gồm đúng 12 chữ số.");
+      return;
+    }
+
+    if (email && !/^[\w.%+-]+@gmail\.com$/i.test(email)) {
+      showError("Email phải là địa chỉ Gmail hợp lệ (kết thúc bằng @gmail.com).");
       return;
     }
 
@@ -223,40 +455,64 @@ export default function EmployeeList() {
       setSaving(true);
 
       const form = new FormData();
-      // field text
       Object.entries(formData).forEach(([key, value]) => {
         if (value !== undefined && value !== null) {
           form.append(key, String(value));
         }
       });
-      // file avatar nếu có chọn mới
       if (avatarFile) {
-        form.append("avatar", avatarFile); // phải khớp upload.single("avatar")
+        form.append("avatar", avatarFile);
       }
 
       if (editing) {
-        const res = await fetch(
-          `${API_BASE}/api/employees/${editing.MANV}`,
-          {
-            method: "PUT",
-            body: form,
-          }
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const res = await fetch(`${API_BASE}/api/employees/${editing.MANV}`, {
+          method: "PUT",
+          body: form,
+        });
+
+        if (!res.ok) {
+          let msg = "Không lưu được nhân viên.";
+          try {
+            const data = await res.json();
+            if (data?.error) msg = data.error; // lỗi trùng SĐT / Email / CMND từ backend
+          } catch (_) {}
+          showError(msg);
+          return;
+        }
+
         await fetchEmployees();
       } else {
         const res = await fetch(`${API_BASE}/api/employees`, {
           method: "POST",
           body: form,
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        if (!res.ok) {
+          let msg = "Không lưu được nhân viên.";
+          try {
+            const data = await res.json();
+            if (data?.error) msg = data.error;
+          } catch (_) {}
+          showError(msg);
+          return;
+        }
+
         await fetchEmployees();
       }
 
+      // Thành công => đóng modal
       setShowModal(false);
+      if (avatarPreview && avatarPreview.startsWith("blob:")) {
+        try {
+          URL.revokeObjectURL(avatarPreview);
+        } catch {}
+      }
+      setAvatarPreview("");
+      setEditing(null);
+      setFormError(null);
     } catch (err) {
-      console.error(err);
-      alert("Lưu nhân viên thất bại, vui lòng thử lại.");
+      console.error("Lỗi khi lưu nhân viên:", err);
+      showError("Có lỗi xảy ra khi lưu nhân viên. Vui lòng thử lại.");
     } finally {
       setSaving(false);
     }
@@ -276,6 +532,48 @@ export default function EmployeeList() {
       console.error(err);
       alert("Xóa nhân viên thất bại.");
     }
+  };
+
+  const closeModal = () => {
+    if (saving) return;
+    setShowModal(false);
+    setEditing(null);
+    setFormError(null); 
+    setFormData({
+      MANV: "",
+      HONV: "",
+      TENNV: "",
+      MaPB: "",
+      MaCV: "",
+      DienThoai: "",
+      Email: "",
+      Status: "Đang làm việc",
+      AvatarUrl: "",
+      NgaySinh: "",
+      GioiTinh: "",
+      CMND: "",
+      HoKhau: "",
+      DiaChi: "",
+      NgayVaoLam: "",
+      SoBHYT: "",
+      SoTheATM: "",
+      MaSoThue: "",
+      LoaiHopDong: "",
+      TrinhDoVanHoa: "",
+      TrinhDoChuyenMon: "",
+      LuongCoBan: undefined,
+      PhuCapChucVu: undefined,
+      DanToc: "",
+      TonGiao: "",
+      QuocTich: "",
+    });
+    setAvatarFile(null);
+    if (avatarPreview && avatarPreview.startsWith("blob:")) {
+      try {
+        URL.revokeObjectURL(avatarPreview);
+      } catch {}
+    }
+    setAvatarPreview("");
   };
 
   // ----- RENDER -----
@@ -309,7 +607,7 @@ export default function EmployeeList() {
           </span>
           <input
             type="text"
-            placeholder="Tìm kiếm theo tên hoặc mã NV..."
+            placeholder="Tìm kiếm theo tên, mã NV, SĐT, email..."
             className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-300 text-sm focus:ring-blue-500 focus:border-blue-500"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -369,6 +667,7 @@ export default function EmployeeList() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredEmployees.map((emp) => {
                   const avatarSrc = resolveAvatarUrl(emp.AvatarUrl);
+                  const positionName = getPositionName(emp.MaCV);
                   return (
                     <tr key={emp.MANV} className="hover:bg-gray-50">
                       {/* Nhân viên */}
@@ -401,7 +700,7 @@ export default function EmployeeList() {
                       {/* Chức vụ / phòng ban */}
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
                         <div className="font-medium">
-                          {emp.MaCV || "Chức vụ chưa cập nhật"}
+                          {positionName}
                         </div>
                         <div className="text-xs text-gray-500">
                           {getDeptName(emp.MaPB)}
@@ -442,7 +741,6 @@ export default function EmployeeList() {
                       {/* Thao tác */}
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
                         <div className="inline-flex items-center gap-2">
-                          {/* Xem chi tiết */}
                           <button
                             className="p-2 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100"
                             title="Xem chi tiết"
@@ -451,7 +749,6 @@ export default function EmployeeList() {
                             <Eye className="w-4 h-4" />
                           </button>
 
-                          {/* Sửa */}
                           <button
                             className="p-2 rounded-lg bg-orange-50 text-orange-600 hover:bg-orange-100"
                             title="Chỉnh sửa"
@@ -460,7 +757,6 @@ export default function EmployeeList() {
                             <Edit2 className="w-4 h-4" />
                           </button>
 
-                          {/* Xóa */}
                           <button
                             className="p-2 rounded-lg bg-red-50 text-red-600 hover:bg-red-100"
                             title="Xóa"
@@ -487,7 +783,6 @@ export default function EmployeeList() {
               </tbody>
             </table>
 
-            {/* footer nhỏ: tổng số */}
             <div className="px-6 py-3 text-xs text-gray-500 border-t border-gray-100">
               Hiển thị {filteredEmployees.length} của {employees.length} kết quả
             </div>
@@ -498,28 +793,37 @@ export default function EmployeeList() {
       {/* MODAL THÊM / SỬA */}
       {showModal && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
-          <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full">
-            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
+          <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full flex flex-col max-h-[90vh]">
+            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center flex-none">
               <h3 className="text-lg font-semibold text-gray-900">
                 {editing ? "Chỉnh sửa nhân viên" : "Thêm nhân viên mới"}
               </h3>
               <button
                 className="text-gray-400 hover:text-gray-600"
-                onClick={() => !saving && setShowModal(false)}
+                onClick={closeModal}
               >
                 ×
               </button>
             </div>
 
-            <form className="p-6 space-y-4" onSubmit={handleSave}>
+            <form
+              ref={formRef}
+              className="p-6 space-y-6 overflow-y-auto"
+              onSubmit={handleSave}
+            >
+              {formError && (
+                <div className="mb-3 px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-xs text-red-700">
+                  {formError}
+                </div>
+              )}
               {/* Hàng 1: mã, họ, tên */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <Field
-                  label="Mã NV *"
+                  label="Mã NV"
                   name="MANV"
                   value={formData.MANV || ""}
                   onChange={handleChange}
-                  disabled={!!editing}
+                  disabled
                 />
                 <Field
                   label="Họ"
@@ -546,12 +850,6 @@ export default function EmployeeList() {
                     accept="image/*"
                     onChange={handleAvatarChange}
                     className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm bg-white"
-                  />
-                  {/* gửi AvatarUrl hiện tại (nếu có) để backend dùng lại nếu không upload mới */}
-                  <input
-                    type="hidden"
-                    name="AvatarUrl"
-                    value={formData.AvatarUrl || ""}
                   />
                 </div>
                 <div className="flex md:justify-center">
@@ -581,18 +879,44 @@ export default function EmployeeList() {
 
               {/* Hàng 3: phòng ban, chức vụ, trạng thái */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <Field
-                  label="Mã phòng ban"
-                  name="MaPB"
-                  value={formData.MaPB || ""}
-                  onChange={handleChange}
-                />
-                <Field
-                  label="Mã chức vụ"
-                  name="MaCV"
-                  value={formData.MaCV || ""}
-                  onChange={handleChange}
-                />
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">
+                    Phòng ban
+                  </label>
+                  <select
+                    name="MaPB"
+                    value={formData.MaPB || ""}
+                    onChange={handleChange}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                  >
+                    <option value="">-- Chọn phòng ban --</option>
+                    {departments.map((d) => (
+                      <option key={d.MaPB} value={d.MaPB}>
+                        {d.TenPB}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">
+                    Chức vụ
+                  </label>
+                  <select
+                    name="MaCV"
+                    value={formData.MaCV || ""}
+                    onChange={handleChange}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                  >
+                    <option value="">-- Chọn chức vụ --</option>
+                    {POSITIONS.map((p) => (
+                      <option key={p.MaCV} value={p.MaCV}>
+                        {p.TenCV}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">
                     Trạng thái
@@ -643,8 +967,74 @@ export default function EmployeeList() {
                 />
               </div>
 
-              {/* Hàng 5: hộ khẩu, địa chỉ */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Hàng: Dân tộc + Tôn giáo + Quốc tịch */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">
+                    Dân tộc
+                  </label>
+                  <select
+                    name="DanToc"
+                    value={formData.DanToc || ""}
+                    onChange={handleChange}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                  >
+                    <option value="">-- Chọn dân tộc --</option>
+                    {ETHNIC_GROUPS.map((e) => (
+                      <option key={e} value={e}>
+                        {e}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">
+                    Tôn giáo
+                  </label>
+                  <select
+                    name="TonGiao"
+                    value={formData.TonGiao || ""}
+                    onChange={handleChange}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                  >
+                    <option value="">-- Chọn tôn giáo --</option>
+                    {RELIGIONS.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">
+                    Quốc tịch
+                  </label>
+                  <select
+                    name="QuocTich"
+                    value={formData.QuocTich || ""}
+                    onChange={handleChange}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                  >
+                    <option value="">-- Chọn quốc tịch --</option>
+                    {NATIONALITIES.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Hàng 5: nơi sinh, hộ khẩu, địa chỉ */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <Field
+                  label="Nơi sinh"
+                  name="NoiSinh"
+                  value={formData.NoiSinh || ""}
+                  onChange={handleChange}
+                />
                 <Field
                   label="Hộ khẩu"
                   name="HoKhau"
@@ -658,6 +1048,7 @@ export default function EmployeeList() {
                   onChange={handleChange}
                 />
               </div>
+
 
               {/* Hàng 6: ngày vào làm, BHYT, ATM */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -673,11 +1064,12 @@ export default function EmployeeList() {
                   name="SoBHYT"
                   value={formData.SoBHYT || ""}
                   onChange={handleChange}
+                  disabled
                 />
                 <Field
-                  label="Số thẻ ATM"
-                  name="SoTheATM"
-                  value={formData.SoTheATM || ""}
+                  label="Mã số thuế"
+                  name="MaSoThue"
+                  value={formData.MaSoThue || ""}
                   onChange={handleChange}
                 />
               </div>
@@ -698,11 +1090,107 @@ export default function EmployeeList() {
                 />
               </div>
 
+              {/* HỢP ĐỒNG & CÔNG TÁC */}
+              <div className="mt-4 border-t pt-4">
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">
+                  Hợp đồng & Công tác
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">
+                      Loại hợp đồng
+                    </label>
+                    <select
+                      name="LoaiHopDong"
+                      value={formData.LoaiHopDong ?? ""}
+                      onChange={handleChange}
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                    >
+                      <option value="">-- Chọn loại hợp đồng --</option>
+                      {CONTRACT_TYPES.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* TRÌNH ĐỘ & ĐÀO TẠO */}
+              <div className="mt-4 border-t pt-4">
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">
+                  Trình độ & Đào tạo
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">
+                      Trình độ văn hóa
+                    </label>
+                    <select
+                      name="TrinhDoVanHoa"
+                      value={formData.TrinhDoVanHoa ?? ""}
+                      onChange={handleChange}
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                    >
+                      <option value="">-- Chọn trình độ --</option>
+                      {EDUCATION_LEVELS.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">
+                      Trình độ chuyên môn
+                    </label>
+                    <select
+                      name="TrinhDoChuyenMon"
+                      value={formData.TrinhDoChuyenMon ?? ""}
+                      onChange={handleChange}
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                    >
+                      <option value="">-- Chọn chuyên môn --</option>
+                      {PROFESSIONAL_LEVELS.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* LƯƠNG & THƯỞNG */}
+              <div className="mt-4 border-t pt-4">
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">
+                  Lương & Thưởng
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Field
+                    label="Lương cơ bản"
+                    name="LuongCoBan"
+                    type="number"
+                    value={formData.LuongCoBan ?? ""}
+                    onChange={handleChange}
+                  />
+                  <Field
+                    label="Phụ cấp chức vụ / thưởng"
+                    name="PhuCapChucVu"
+                    type="number"
+                    value={formData.PhuCapChucVu ?? ""}
+                    onChange={handleChange}
+                  />
+                </div>
+              </div>
+
               <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"
                   className="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 bg-white"
-                  onClick={() => !saving && setShowModal(false)}
+                  onClick={closeModal}
                 >
                   Hủy
                 </button>
@@ -769,7 +1257,7 @@ function Field({
 }: {
   label: string;
   name: string;
-  value: string;
+  value: string | number;
   onChange: (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
   ) => void;
@@ -786,7 +1274,7 @@ function Field({
         type={type}
         value={value}
         onChange={onChange}
-        disabled={disabled}
+        disabled={!!disabled}
         className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm disabled:bg-gray-100"
       />
     </div>

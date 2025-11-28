@@ -33,6 +33,7 @@ import InsuranceTax from "./components/InsuranceTax";
 import Login from "./components/Login";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { AuthProvider, useAuth } from "./components/AuthContext";
+import AttendanceEdit from "./components/AttendanceEdit";
 
 // ================= SIDEBAR =================
 
@@ -306,6 +307,14 @@ const AppLayout: React.FC = () => {
               element={
                 <ProtectedRoute allowRoles={["GD", "AD", "NV"]}>
                   <Attendance />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/attendance-edit"
+              element={
+                <ProtectedRoute allowRoles={["GD", "AD"]}>
+                  <AttendanceEdit />
                 </ProtectedRoute>
               }
             />

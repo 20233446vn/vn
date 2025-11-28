@@ -18,9 +18,12 @@ interface RawAttendance {
 type NormalizedStatus = "Đúng giờ" | "Đi muộn" | "Vắng";
 
 interface DailyRecord {
-  day: number; // ngày trong tháng
+  day: number;
   status: NormalizedStatus | null;
+  id?: number;
+  dateStr?: string;
 }
+
 
 interface EmployeeAttendanceRow {
   MANV: string;
@@ -90,8 +93,10 @@ function buildWeekDays(monthStr: string, week: number): WeekDayInfo[] {
     const d = new Date(year, monthIndex, dayOfMonth);
     const weekday = d.getDay(); // 0=CN,1=Mon...
 
-    const dateStr = d.toISOString().slice(0, 10); // 2025-05-01
-    const dateLabel = `${String(dayOfMonth).padStart(2, "0")}/${mStr}`;
+    // TỰ format ngày, không dùng toISOString để tránh lệch múi giờ
+    const dayStr = String(dayOfMonth).padStart(2, "0");
+    const dateStr = `${yStr}-${mStr}-${dayStr}`; // VD: "2025-05-01"
+    const dateLabel = `${dayStr}/${mStr}`;
 
     result.push({
       label: weekdayShort[weekday],
@@ -100,6 +105,7 @@ function buildWeekDays(monthStr: string, week: number): WeekDayInfo[] {
       dayOfMonth,
       valid: true,
     });
+
   }
 
   return result;
@@ -166,17 +172,25 @@ export default function Attendance() {
       const sample = records[0];
 
       const dailyRecords: DailyRecord[] = weekDays.map((wd) => {
-        if (!wd.valid) {
-          return { day: wd.dayOfMonth, status: null };
-        }
+          if (!wd.valid) {
+            return { day: wd.dayOfMonth, status: null };
+          }
 
-        const recordForDay = records.find((r) => r.date === wd.dateStr);
+          const recordForDay = records.find((r) => {
+            const dateOnly = (r.date || "").slice(0, 10); // "2025-05-01T..." -> "2025-05-01"
+          return dateOnly === wd.dateStr;
+        });
 
         return {
+          id: recordForDay?.id,               // nhớ gán id để còn chỉnh sửa
           day: wd.dayOfMonth,
-          status: recordForDay ? normalizeStatus(recordForDay.status) : null,
+          status: recordForDay
+            ? normalizeStatus(recordForDay.status)
+            : null,
+          dateStr: wd.dateStr,
         };
       });
+
 
       const totalWorked = dailyRecords.filter(
         (r) => r.status === "Đúng giờ" || r.status === "Đi muộn"

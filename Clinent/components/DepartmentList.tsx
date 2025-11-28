@@ -88,7 +88,7 @@ export default function DepartmentList() {
           employeeCount,
           managerName: manager
             ? `${manager.HONV} ${manager.TENNV}`
-            : "Đang khuyết",
+            : "Đang hoạt động",
         };
       })
       .filter((d) =>

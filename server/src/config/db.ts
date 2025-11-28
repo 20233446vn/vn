@@ -2,6 +2,8 @@ import mysql from "mysql2";
 import dotenv from "dotenv";
 
 dotenv.config();
+console.log("🔵 DB_NAME backend đang dùng:", process.env.DB_NAME);
+console.log("👉 File index.ts đang chạy:", __filename);
 
 // Tạo pool kết nối MySQL
 const pool = mysql.createPool({
