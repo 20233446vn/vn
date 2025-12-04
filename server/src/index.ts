@@ -4,7 +4,7 @@ import * as dotenv from "dotenv";
 import * as path from "path";
 import multer from "multer";
 import { db, testConnection } from "./config/db";
-
+import cron from "node-cron";
 dotenv.config();
 
 const app = express();
@@ -44,10 +44,7 @@ function asyncHandler(
   };
 }
 
-/* -----------------------------------------------------
-   AUTHENTICATION (LOGIN + RESET PASSWORD)
------------------------------------------------------- */
-
+//login
 app.post(
   "/api/auth/login",
   asyncHandler(async (req, res) => {
@@ -58,8 +55,16 @@ app.post(
         .status(400)
         .json({ error: "Vui lòng nhập Tên đăng nhập và Mật khẩu." });
 
+    // Lấy thêm MaNV
     const [rows] = await db.query(
-      `SELECT u.id, u.MaPQ, u.TenDN, u.HoTen, u.TrangThai, u.MatKhau, r.TenPQ
+      `SELECT u.id,
+              u.MaPQ,
+              u.TenDN,
+              u.HoTen,
+              u.TrangThai,
+              u.MatKhau,
+              u.MaNV,
+              r.TenPQ
        FROM system_users u 
        LEFT JOIN system_roles r ON u.MaPQ = r.MaPQ
        WHERE u.TenDN = ?`,
@@ -76,12 +81,14 @@ app.post(
     if (user.TrangThai !== "Hoạt động")
       return res.status(403).json({ error: "Tài khoản đang bị khóa." });
 
-    // Nếu là nhân viên → lấy thông tin nhân viên
+    // Nếu là nhân viên → lấy thông tin nhân viên theo MaNV
     let employee: any = null;
-    if (user.MaPQ === "NV") {
+    if (user.MaPQ === "NV" && user.MaNV) {
       const [empRows] = await db.query(
-        "SELECT id, MANV, HONV, TENNV, MaPB, DienThoai, Email FROM employees WHERE MANV = ?",
-        [user.TenDN]
+        `SELECT id, MANV, HONV, TENNV, MaPB, DienThoai, Email
+         FROM employees
+         WHERE MANV = ?`,
+        [user.MaNV]
       );
       employee = (empRows as any[])[0] || null;
     }
@@ -89,17 +96,17 @@ app.post(
     res.json({
       user: {
         id: user.id,
-        username: user.TenDN,
+        username: user.TenDN,          // dùng để đăng nhập
         fullName: user.HoTen,
         roleCode: user.MaPQ,
         roleName: user.TenPQ,
+        manv: employee?.MANV || user.MaNV || null, // MANV thật
       },
-      employee,
+      employee, // có MANV, HONV, TENNV...
       token: "simple-demo-token",
     });
   })
 );
-
 // Quên mật khẩu: dùng Email + SĐT tra theo employees (join bằng MaNV)
 app.post(
   "/api/auth/reset-password",
@@ -142,7 +149,15 @@ app.post(
 app.get(
   "/api/employees",
   asyncHandler(async (_req, res) => {
-    const [rows] = await db.query("SELECT * FROM employees ORDER BY MANV");
+    const [rows] = await db.query(
+      `SELECT 
+         e.*,
+         p.TenCV
+       FROM employees e
+       LEFT JOIN positions p ON e.MaCV = p.MaCV
+       ORDER BY e.MANV`
+    );
+
     res.json(rows);
   })
 );
@@ -263,6 +278,62 @@ app.post(
         data.PhuCapChucVu || null,
       ]
     );
+    // ============================
+    // TỰ ĐỘNG KHỞI TẠO DỮ LIỆU LIÊN QUAN
+    // ============================
+    const newEmpId = (result as any).insertId;
+
+    // 1) Tự tạo bản ghi payroll cho THÁNG HIỆN TẠI
+    //    month: lấy mốc ngày 1 của tháng hiện tại (YYYY-MM-01)
+    try {
+      await db.query(
+        `INSERT INTO payroll 
+           (employee_id, month, gross_salary, net_salary, bonus, work_days, overtime_hours)
+         VALUES (?, DATE_FORMAT(CURDATE(), '%Y-%m-01'), ?, ?, ?, ?, ?)`,
+        [
+          newEmpId,
+          data.LuongCoBan || 0,          // gross_salary: có thể = Lương cơ bản ban đầu
+          data.LuongCoBan || 0,          // net_salary: tạm = gross, sau này tính lại
+          0,                             // bonus
+          0,                             // work_days
+          0,                             // overtime_hours
+        ]
+      );
+    } catch (e) {
+      console.error("Lỗi tạo payroll mặc định cho nhân viên mới:", e);
+      // Không throw để không chặn việc tạo nhân viên
+    }
+
+    // 2) Tự tạo bản ghi BHXH/thuế cho THÁNG HIỆN TẠI
+    try {
+      await db.query(
+        `INSERT INTO insurance_tax
+           (employee_id, month, base_salary, allowance, insurance_employee, tax)
+         VALUES (?, DATE_FORMAT(CURDATE(), '%Y-%m-01'), ?, ?, ?, ?)`,
+        [
+          newEmpId,
+          data.LuongCoBan || 0,          // base_salary
+          data.PhuCapChucVu || 0,        // allowance
+          0,                             // insurance_employee: tạm 0, sau này tính
+          0,                             // tax: tạm 0, sau này tính
+        ]
+      );
+    } catch (e) {
+      console.error("Lỗi tạo insurance_tax mặc định cho nhân viên mới:", e);
+    }
+
+    // 3) Tự tạo chấm công NGÀY HÔM NAY (status = 'Chưa chấm')
+    //    Nếu đã có do cron tạo trước thì không ghi đè (ON DUPLICATE giữ nguyên)
+    try {
+      await db.query(
+        `INSERT INTO attendance (employee_id, date, status)
+         VALUES (?, CURDATE(), 'Chưa chấm')
+         ON DUPLICATE KEY UPDATE status = status`,
+        [newEmpId]
+      );
+    } catch (e) {
+      console.error("Lỗi tạo attendance mặc định cho nhân viên mới:", e);
+    }
 
     const [rows] = await db.query("SELECT * FROM employees WHERE id = ?", [
       (result as any).insertId,
@@ -456,6 +527,103 @@ app.delete(
     res.json({ success: true });
   })
 );
+app.post(
+  "/api/employees/:manv/face-register",
+  asyncHandler(async (req, res) => {
+    // Param LÀ MANV
+    const rawKey = (req.params.manv ?? "").toString().trim();
+    const key = rawKey.toUpperCase();
+    const { descriptor } = req.body; // mảng số
+
+    if (!rawKey) {
+      return res.status(400).json({ error: "Thiếu mã nhân viên." });
+    }
+
+    if (!descriptor || !Array.isArray(descriptor)) {
+      return res
+        .status(400)
+        .json({ error: "Thiếu hoặc sai định dạng descriptor." });
+    }
+
+    // Tìm đúng nhân viên theo MANV
+    const [empRows] = await db.query(
+      `SELECT e.id, e.MANV
+       FROM employees e
+       WHERE TRIM(UPPER(e.MANV)) = ?
+       LIMIT 1`,
+      [key]
+    );
+    const emp = (empRows as any[])[0];
+
+    if (!emp) {
+      return res.status(404).json({ error: "Không tìm thấy nhân viên." });
+    }
+
+    await db.query(
+      "UPDATE employees SET face_descriptor = ? WHERE id = ?",
+      [JSON.stringify(descriptor), emp.id]
+    );
+
+    res.json({ success: true, manv: emp.MANV });
+  })
+);
+// GET /api/employees/:manv/face-descriptor
+app.get(
+  "/api/employees/:manv/face-descriptor",
+  asyncHandler(async (req, res) => {
+    const rawKey = (req.params.manv ?? "").toString().trim();
+    const key = rawKey.toUpperCase();
+
+    if (!rawKey) {
+      return res
+        .status(400)
+        .json({ error: "Thiếu mã nhân viên." });
+    }
+
+    const [rows] = await db.query(
+      `SELECT e.face_descriptor, e.MANV
+       FROM employees e
+       WHERE TRIM(UPPER(e.MANV)) = ?
+       LIMIT 1`,
+      [key]
+    );
+    const emp = (rows as any[])[0];
+
+    if (!emp) {
+      return res.status(404).json({ error: "Không tìm thấy nhân viên." });
+    }
+
+    if (!emp.face_descriptor) {
+      return res
+        .status(404)
+        .json({ error: "Nhân viên chưa đăng ký mẫu khuôn mặt." });
+    }
+
+    try {
+      let descriptor = emp.face_descriptor as any;
+
+      // Nếu MySQL trả về string thì mới parse,
+      // nếu trả về sẵn dạng array/object thì dùng trực tiếp
+      if (typeof descriptor === "string") {
+        descriptor = JSON.parse(descriptor);
+      }
+
+      if (!Array.isArray(descriptor)) {
+        return res
+          .status(500)
+          .json({ error: "Dữ liệu mẫu khuôn mặt không hợp lệ." });
+      }
+
+      return res.json({ descriptor });
+    } catch (e) {
+      console.error("Lỗi đọc face_descriptor:", e);
+      // ❌ Không xóa dữ liệu nữa, chỉ báo lỗi
+      return res.status(500).json({
+        error: "Lỗi xử lý dữ liệu mẫu khuôn mặt.",
+      });
+    }
+  })
+);
 
 /* -----------------------------------------------------
    PHÒNG BAN
@@ -552,14 +720,25 @@ app.get(
 /* -----------------------------------------------------
    CHẤM CÔNG (ATTENDANCE)
 ------------------------------------------------------ */
-
 app.get(
   "/api/attendance",
   asyncHandler(async (req, res) => {
     const { date, month, manv } = req.query;
 
-    let sql =
-      "SELECT a.*, e.MANV, e.HONV, e.TENNV FROM attendance a JOIN employees e ON a.employee_id = e.id";
+    // TRẢ VỀ GIỜ DẠNG CHUỖI HH:mm, KHÔNG TRẢ DATE OBJECT
+    let sql = `
+      SELECT
+        a.id,
+        a.employee_id,
+        a.date,
+        a.status,
+        DATE_FORMAT(a.check_in_time,  '%H:%i') AS checkInTime,
+        DATE_FORMAT(a.check_out_time, '%H:%i') AS checkOutTime,
+        e.MANV, e.HONV, e.TENNV
+      FROM attendance a
+      JOIN employees e ON a.employee_id = e.id
+    `;
+
     const conditions: string[] = [];
     const params: any[] = [];
 
@@ -604,22 +783,46 @@ app.post(
 
     const employeeId = (empRows as any[])[0].id;
 
-    for (const d of days) {
-      if (!d.date) continue;
+    // GHÉP date + time -> DATETIME "YYYY-MM-DD HH:MM:SS"
+    const makeDateTime = (date: string, time?: string | null) => {
+      if (!time) return null;
+      let t = time.trim();
+      // "HH:MM" -> "HH:MM:00"
+      if (/^\d{2}:\d{2}$/.test(t)) {
+        t = t + ":00";
+      }
+      // "HH:MM:SS"
+      if (!/^\d{2}:\d{2}:\d{2}$/.test(t)) {
+        return null;
+      }
+      return `${date} ${t}`; // VD: "2025-12-03 10:08:00"
+    };
 
-      if (!d.status) {
+    for (const d of days) {
+      if (!d || !d.date) continue;
+
+      const status = d.status || null;
+      const checkIn = makeDateTime(d.date, d.checkInTime);
+      const checkOut = makeDateTime(d.date, d.checkOutTime);
+
+      // nếu không có status và không có giờ => xoá bản ghi
+      if (!status && !checkIn && !checkOut) {
         await db.query(
           "DELETE FROM attendance WHERE employee_id=? AND date=?",
           [employeeId, d.date]
         );
-      } else {
-        await db.query(
-          `INSERT INTO attendance (employee_id, date, status)
-           VALUES (?, ?, ?)
-           ON DUPLICATE KEY UPDATE status=VALUES(status)`,
-          [employeeId, d.date, d.status]
-        );
+        continue;
       }
+
+      await db.query(
+        `INSERT INTO attendance (employee_id, date, status, check_in_time, check_out_time)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE 
+           status = VALUES(status),
+           check_in_time = VALUES(check_in_time),
+           check_out_time = VALUES(check_out_time)`,
+        [employeeId, d.date, status, checkIn, checkOut]
+      );
     }
 
     res.json({ success: true });
@@ -1075,9 +1278,310 @@ app.get(
 );
 
 /* -----------------------------------------------------
-   DIỄN BIẾN CÔNG TÁC (EMPLOYMENT EVENTS)
+   ATTENDANCE - NHÂN VIÊN TỰ CHẤM CÔNG HÔM NAY
 ------------------------------------------------------ */
 
+// GET: lấy (và nếu cần thì tự tạo) chấm công hôm nay của 1 nhân viên (theo MANV hoặc Tên đăng nhập)
+app.get(
+  "/api/attendance/my-today",
+  asyncHandler(async (req, res) => {
+    const manvRaw = (req.query.manv || "").toString().trim();
+
+    if (!manvRaw) {
+      return res.status(400).json({ error: "Thiếu mã nhân viên (manv)." });
+    }
+
+    const key = manvRaw.toUpperCase();
+
+    // 1. Tìm nhân viên theo MANV **hoặc** TenDN (tên đăng nhập)
+    const [empRows] = await db.query(
+      `SELECT e.id, e.MANV, e.HONV, e.TENNV
+       FROM employees e
+       LEFT JOIN system_users u ON u.MaNV = e.MANV
+       WHERE TRIM(UPPER(e.MANV)) = ?
+       LIMIT 1`,
+      [key, key]
+    );
+
+    const emp = (empRows as any[])[0];
+
+    if (!emp) {
+      return res.status(404).json({ error: "Không tìm thấy nhân viên." });
+    }
+
+    const employeeId = emp.id as number;
+
+    // 2. Ngày hôm nay (YYYY-MM-DD)
+    const now = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    const yyyy = now.getUTCFullYear();
+    const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(now.getUTCDate()).padStart(2, "0");
+    const dateStr = `${yyyy}-${mm}-${dd}`;
+
+    // 3. Thử lấy record chấm công hôm nay
+    const [rows1] = await db.query(
+      `
+        SELECT 
+          a.*,
+          DATE_FORMAT(a.check_in_time,  '%H:%i') AS checkInTime,
+          DATE_FORMAT(a.check_out_time, '%H:%i') AS checkOutTime,
+          e.MANV, e.HONV, e.TENNV
+        FROM attendance a
+        JOIN employees e ON a.employee_id = e.id
+        WHERE a.employee_id = ? AND a.date = ?
+        LIMIT 1
+      `,
+      [employeeId, dateStr]
+    );
+
+
+    let record = (rows1 as any[])[0] || null;
+
+    // 4. Nếu CHƯA có → tạo mới 1 dòng cho hôm nay với status mặc định = 'Chưa chấm'
+    if (!record) {
+      const DEFAULT_STATUS = "Chưa chấm";
+
+      await db.query(
+        "INSERT INTO attendance (employee_id, date, status) VALUES (?, ?, ?)",
+        [employeeId, dateStr, DEFAULT_STATUS]
+      );
+
+      // Lấy lại record vừa tạo
+      const [rows2] = await db.query(
+      `
+        SELECT 
+          a.*,
+          DATE_FORMAT(a.check_in_time,  '%H:%i') AS checkInTime,
+          DATE_FORMAT(a.check_out_time, '%H:%i') AS checkOutTime,
+          e.MANV, e.HONV, e.TENNV
+        FROM attendance a
+        JOIN employees e ON a.employee_id = e.id
+        WHERE a.employee_id = ? AND a.date = ?
+        LIMIT 1
+      `,
+      [employeeId, dateStr]
+    );
+
+
+      record = (rows2 as any[])[0] || null;
+    }
+
+    // 5. Trả về cho FE
+    res.json(record);
+  })
+);
+
+// POST: nhân viên chấm công hôm nay (vào / ra, tính giờ)
+app.post(
+  "/api/attendance/mark-today",
+  asyncHandler(async (req, res) => {
+    const { manv } = req.body;
+
+    if (!manv) {
+      return res.status(400).json({ error: "Thiếu manv." });
+    }
+
+    const normKey = manv.toString().trim().toUpperCase();
+
+    // 1. Tìm nhân viên
+    const [empRows] = await db.query(
+      `SELECT id, MANV 
+       FROM employees 
+       WHERE TRIM(UPPER(MANV)) = ?
+       LIMIT 1`,
+      [normKey]
+    );
+    const empList = empRows as any[];
+    const emp = empList[0];
+
+    if (!emp) {
+      return res.status(404).json({ error: "Không tìm thấy nhân viên." });
+    }
+
+    const employeeId = emp.id as number;
+
+    // 2. Lấy thời gian hiện tại (giờ máy – bạn đang dùng ở VN nên ok)
+    const now = new Date();
+    const hours = now.getHours();    // 0–23
+    const minutes = now.getMinutes();
+    const totalMinutes = hours * 60 + minutes;
+
+    // 2.1. Tính ngày hôm nay dạng YYYY-MM-DD
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    const dateStr = `${yyyy}-${mm}-${dd}`;
+
+    // 3. Lấy record chấm công hôm nay (nếu chưa có thì tạo)
+    const [attRows] = await db.query(
+      `SELECT * FROM attendance 
+       WHERE employee_id = ? AND date = ?
+       LIMIT 1`,
+      [employeeId, dateStr]
+    );
+    const attList = attRows as any[];
+    let record = attList[0] || null;
+
+    if (!record) {
+      await db.query(
+        `INSERT INTO attendance (employee_id, date, status)
+         VALUES (?, ?, ?)`,
+        [employeeId, dateStr, "Chưa đủ"]
+      );
+
+      const [newRows] = await db.query(
+        `SELECT * FROM attendance 
+         WHERE employee_id = ? AND date = ?
+         LIMIT 1`,
+        [employeeId, dateStr]
+      );
+      record = (newRows as any[])[0];
+    }
+
+    // 4. Xác định đây là chấm VÀO hay chấm RA
+    //    - Nếu chưa có giờ vào -> coi là chấm vào
+    //    - Nếu đã có giờ vào mà chưa có giờ ra -> coi là chấm ra
+    //    - Nếu cả hai đều có rồi -> không cho chấm nữa
+    const hasCheckIn = !!record.check_in_time;
+    const hasCheckOut = !!record.check_out_time;
+
+    // Format giờ minute
+    const timeStr = now.toTimeString().slice(0, 8); // HH:MM:SS
+
+    const MORNING_START = 7 * 60 + 50;  // 7h50
+    const MORNING_LIMIT = 8 * 60;       // 8h00
+
+    const AFTERNOON_ALLOW = 16 * 60 + 50; // 16h50
+    const AFTERNOON_END   = 17 * 60;      // 17h00
+
+    // 4.1. Nếu chưa chấm vào -> xử lý chấm VÀO
+    if (!hasCheckIn) {
+      // Chỉ cho chấm vào từ 7h50 trở lên
+      if (totalMinutes < MORNING_START) {
+        return res.status(400).json({
+          error: "Chưa đến giờ chấm VÀO. Chỉ được chấm từ 7h50 đến sau 8h.",
+        });
+      }
+
+      let status: string;
+
+      if (totalMinutes <= MORNING_LIMIT) {
+        status = "Đúng giờ";   // 7h50–8h00
+      } else {
+        status = "Đi muộn";    // >8h00
+      }
+
+      await db.query(
+        `UPDATE attendance
+         SET check_in_time = ?, check_in_status = ?, status = ?
+         WHERE id = ?`,
+        [now, status, status, record.id]
+      );
+
+      return res.json({
+        success: true,
+        type: "check_in",
+        manv: normKey,
+        time: timeStr,
+        status,
+        message: `Đã chấm VÀO lúc ${timeStr} (${status}).`,
+      });
+    }
+
+    // 4.2. Nếu đã chấm vào nhưng chưa chấm ra -> xử lý chấm RA
+    if (!hasCheckOut) {
+      // Không cho chấm ra trước 16h50
+      if (totalMinutes < AFTERNOON_ALLOW) {
+        return res.status(400).json({
+          error: "Chưa đến giờ chấm TAN. Chỉ được chấm từ 16h50 trở đi.",
+        });
+      }
+
+      let status: string;
+
+      if (totalMinutes <= AFTERNOON_END) {
+        status = "Đúng giờ tan"; // 16h50–17h00
+      } else {
+        status = "Tan muộn";     // >17h00, bạn có thể đổi label tuỳ ý
+      }
+
+      await db.query(
+        `UPDATE attendance
+         SET check_out_time = ?, check_out_status = ?
+         WHERE id = ?`,
+        [now, status, record.id]
+      );
+
+      return res.json({
+        success: true,
+        type: "check_out",
+        manv: normKey,
+        time: timeStr,
+        status,
+        message: `Đã chấm TAN lúc ${timeStr} (${status}).`,
+      });
+    }
+
+    // 4.3. Nếu đã có cả check_in & check_out rồi
+    return res.status(400).json({
+      error: "Hôm nay bạn đã chấm VÀO và TAN đủ rồi, không thể chấm thêm.",
+    });
+  })
+);
+
+app.get(
+  "/api/attendance/week",
+  asyncHandler(async (req, res) => {
+    const manv = (req.query.manv || "").toString().trim().toUpperCase();
+    const week = Number(req.query.week);
+    const year = Number(req.query.year);
+
+    if (!manv || !week || !year) {
+      return res.status(400).json({ error: "Thiếu manv / week / year" });
+    }
+
+    // Lấy employee_id theo MANV
+    const [empRows] = await db.query(
+      "SELECT id FROM employees WHERE MANV = ?",
+      [manv]
+    );
+    const empList = empRows as any[];
+
+    if (empList.length === 0) {
+      return res.status(404).json({ error: "Không tìm thấy nhân viên." });
+    }
+
+    const employeeId = empList[0].id as number;
+
+    // Lấy tất cả ngày trong tuần đó
+    const [rows] = await db.query(
+      `
+      SELECT 
+        a.id,
+        DATE_FORMAT(a.date, '%Y-%m-%d')         AS date,
+        a.status,
+        a.check_in_time,
+        a.check_out_time,
+        DATE_FORMAT(a.check_in_time,  '%H:%i')  AS checkInTime,
+        DATE_FORMAT(a.check_out_time, '%H:%i')  AS checkOutTime,
+        e.MANV, e.HONV, e.TENNV,
+        WEEK(a.date, 1) AS week_no,
+        YEAR(a.date)    AS year_no
+      FROM attendance a
+      JOIN employees e ON a.employee_id = e.id
+      WHERE a.employee_id = ?
+        AND WEEK(a.date, 1) = ?
+        AND YEAR(a.date) = ?
+      ORDER BY a.date
+    `,
+      [employeeId, week, year]
+    );
+    res.json(rows);
+  })
+);
+/* -----------------------------------------------------
+   DIỄN BIẾN CÔNG TÁC (EMPLOYMENT EVENTS)
+------------------------------------------------------ */
 // Lấy danh sách diễn biến theo MANV
 app.get(
   "/api/employees/:manv/employment-events",
@@ -1416,4 +1920,41 @@ app.get("/", (_req, res) => {
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
   await testConnection();
+});
+cron.schedule("5 0 * * *", async () => {
+  console.log("⏰ Cron: Đang tạo dữ liệu chấm công tự động...");
+
+  try {
+    // Lấy ngày hôm nay dạng YYYY-MM-DD
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    const dateStr = `${y}-${m}-${d}`;
+
+    // Lấy danh sách nhân viên
+    const [employees]: any = await db.query("SELECT id FROM employees");
+
+    for (const emp of employees) {
+      const empId = emp.id;
+
+      // Kiểm tra đã tồn tại record chấm công chưa
+      const [exist]: any = await db.query(
+        "SELECT id FROM attendance WHERE employee_id = ? AND date = ?",
+        [empId, dateStr]
+      );
+
+      if (exist.length === 0) {
+        // Chưa có → tạo mới
+        await db.query(
+          "INSERT INTO attendance (employee_id, date, status) VALUES (?, ?, ?)",
+          [empId, dateStr, "Vắng"]  // hoặc "Đúng giờ"
+        );
+      }
+    }
+
+    console.log("✅ Cron: Đã tạo chấm công cho ngày", dateStr);
+  } catch (err) {
+    console.error("❌ Cron: Lỗi tạo dữ liệu chấm công", err);
+  }
 });
